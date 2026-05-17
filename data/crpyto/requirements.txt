@@ -1,0 +1,8 @@
+# 使用 conda qlib 环境
+# 运行: conda env use qlib
+# 或 conda activate qlib
+
+# 额外依赖 (在qlib基础上)
+python-dotenv==1.0.0
+requests==2.31.0
+ccxt==4.0.0
