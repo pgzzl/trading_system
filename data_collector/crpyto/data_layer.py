@@ -1,9 +1,12 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
 import pandas as pd
-import requests
-from datetime import datetime, timedelta
-from typing import List, Optional
 import ccxt
-from config import DEFAULT_LIMIT
+from typing import Optional
+from data_collector.crpyto.config import DEFAULT_LIMIT
 
 
 class BinanceDataFetcher:
@@ -12,6 +15,11 @@ class BinanceDataFetcher:
     def __init__(self, enable_rate_limit: bool = True):
         self.exchange = ccxt.binance({
             'enableRateLimit': enable_rate_limit,
+            'timeout': 30000,
+            'proxies': {
+                'http': 'http://127.0.0.1:7897',
+                'https': 'http://127.0.0.1:7897',
+            },
             'options': {
                 'fetchOHLCVMethod': 'public',
             }

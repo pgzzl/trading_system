@@ -5,4 +5,4 @@
 # 额外依赖 (在qlib基础上)
 python-dotenv==1.0.0
 requests==2.31.0
-ccxt==4.0.0
+ccxt==4.5.54

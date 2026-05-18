@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """使用示例 - 需要在 qlib 环境中运行"""
 
-from data_layer import BinanceDataFetcher
-from config import DEFAULT_SYMBOL, DEFAULT_TIMEFRAME
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from data_collector.crpyto.data_layer import BinanceDataFetcher
+from data_collector.crpyto.config import DEFAULT_SYMBOL, DEFAULT_TIMEFRAME
 
 
 def main():
