@@ -6,10 +6,12 @@ from pathlib import Path
 
 import fire
 import pandas as pd
+import ccxt
 from loguru import logger
 from dateutil.tz import tzlocal
 
 CUR_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CUR_DIR.parent.parent
 sys.path.append(str(CUR_DIR.parent.parent))
 from data_collector.base import BaseCollector, BaseNormalize, BaseRun
 from data_collector.utils import deco_retry
@@ -24,6 +26,7 @@ _CG_CRYPTO_SYMBOLS = None
 
 def get_cg_crypto_symbols(qlib_data_path: [str, Path] = None) -> list:
     """get crypto symbols in coingecko
+        从coingecko获取crypto的symbol列表，包含所有在coingecko上有交易的crypto
 
     Returns
     -------
@@ -51,6 +54,7 @@ def get_cg_crypto_symbols(qlib_data_path: [str, Path] = None) -> list:
         _CG_CRYPTO_SYMBOLS = sorted(set(_all_symbols))
 
     return _CG_CRYPTO_SYMBOLS
+
 
 
 class CryptoCollector(BaseCollector):
@@ -104,6 +108,9 @@ class CryptoCollector(BaseCollector):
         self.init_datetime()
 
     def init_datetime(self):
+        """
+        初始化时间和间隔，包括开始时间和结束时间的格式转换和默认值设置，以及根据不同的间隔设置不同的默认开始时间
+        """
         if self.interval == self.INTERVAL_1min:
             self.start_datetime = max(self.start_datetime, self.DEFAULT_START_DATETIME_1MIN)
         elif self.interval == self.INTERVAL_1d:
@@ -130,6 +137,8 @@ class CryptoCollector(BaseCollector):
 
     @staticmethod
     def get_data_from_remote(symbol, interval, start, end):
+        """已废弃，请使用 get_data_from_binance 替代"""
+        logger.warning("get_data_from_remote is deprecated, use get_data_from_binance instead")
         error_msg = f"{symbol}-{interval}-{start}-{end}"
         try:
             cg = CoinGeckoAPI()
@@ -148,25 +157,116 @@ class CryptoCollector(BaseCollector):
         except Exception as e:
             logger.warning(f"{error_msg}:{e}")
 
+    @staticmethod
+    def get_data_from_binance(symbol, interval, start, end):
+        """
+        使用 ccxt 从 Binance 获取历史K线数据
+
+        Parameters
+        ----------
+        symbol: str
+            交易对, 如 'BTC/USDT'
+        interval: str
+            时间周期, 如 '1d', '1h', '1m', '5m', '15m', '4h'
+        start: str
+            开始时间, 如 '2020-01-01'
+        end: str
+            结束时间, 如 '2024-01-01'
+
+        Returns
+        -------
+        pd.DataFrame or None
+            columns: date, open, high, low, close, volume
+        """
+        error_msg = f"{symbol}-{interval}-{start}-{end}"
+
+        # qlib 格式 (1min/1d) 转 Binance 格式 (1m/1d)
+        _binance_interval = interval.replace("min", "m") if interval.endswith("min") else interval
+
+        try:
+            exchange = ccxt.binance({
+                'enableRateLimit': True,
+                'proxies': {
+                'http': 'http://127.0.0.1:7897',
+                'https': 'http://127.0.0.1:7897',
+            },
+            })
+
+            since = int(pd.Timestamp(start).timestamp() * 1000)
+            end_ts = int(pd.Timestamp(end).timestamp() * 1000)
+
+            all_ohlcv = []
+            current_since = since
+
+            while current_since < end_ts:
+                ohlcv = exchange.fetch_ohlcv(
+                    symbol=symbol,
+                    timeframe=_binance_interval,
+                    since=current_since,
+                    limit=1000,
+                )
+
+                if not ohlcv:
+                    break
+
+                all_ohlcv.extend(ohlcv)
+                current_since = ohlcv[-1][0] + 1
+
+                if len(ohlcv) < 1000:
+                    break
+
+            if not all_ohlcv:
+                return None
+
+            df = pd.DataFrame(
+                all_ohlcv,
+                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+            )
+            df = df.drop_duplicates(subset=['timestamp'])
+            df = df[df['timestamp'] < end_ts]
+
+            df['date'] = pd.to_datetime(df['timestamp'], unit='ms')
+            if _binance_interval == '1d':
+                df['date'] = [x.date() for x in df['date']]
+
+            return df[['date', 'open', 'high', 'low', 'close', 'volume']].reset_index(drop=True)
+
+        except Exception as e:
+            logger.warning(f"{error_msg}:{e}")
+            return None
+
     def get_data(
         self, symbol: str, interval: str, start_datetime: pd.Timestamp, end_datetime: pd.Timestamp
     ) -> [pd.DataFrame]:
+        """获取数据的主函数，根据不同的时间周期调用不同的数据获取方法，目前仅支持1d,1m"""
         def _get_simple(start_, end_):
             self.sleep()
             _remote_interval = interval
-            return self.get_data_from_remote(
+            return self.get_data_from_binance(
                 symbol,
                 interval=_remote_interval,
                 start=start_,
                 end=end_,
             )
 
-        if interval == self.INTERVAL_1d:
+        if interval == self.INTERVAL_1d or interval == self.INTERVAL_1min:
             _result = _get_simple(start_datetime, end_datetime)
         else:
             raise ValueError(f"cannot support {interval}")
         return _result
 
+
+class CryptoCollector1min(CryptoCollector, ABC):
+    def get_instrument_list(self):
+        logger.info("use default binance symbol: BTC/USDT")
+        return ["BTC/USDT"]
+
+    def normalize_symbol(self, symbol):
+        return symbol
+
+    @property
+    def _timezone(self):
+        return "Asia/Shanghai"
 
 class CryptoCollector1d(CryptoCollector, ABC):
     def get_instrument_list(self):
@@ -223,6 +323,11 @@ class CryptoNormalize1d(CryptoNormalize):
         return None
 
 
+class CryptoNormalize1min(CryptoNormalize):
+    def _get_calendar_list(self):
+        return None
+
+
 class Run(BaseRun):
     def __init__(self, source_dir=None, normalize_dir=None, max_workers=1, interval="1d"):
         """
@@ -250,7 +355,7 @@ class Run(BaseRun):
 
     @property
     def default_base_dir(self) -> [Path, str]:
-        return CUR_DIR
+        return PROJECT_ROOT / "rawdata"
 
     def download_data(
         self,
@@ -283,13 +388,16 @@ class Run(BaseRun):
         Examples
         ---------
             # get daily data
-            $ python collector.py download_data --source_dir ~/.qlib/crypto_data/source/1d --start 2015-01-01 --end 2021-11-30 --delay 1 --interval 1d
+            $ python collector.py download_data --source_dir rawdata/source --start 2015-01-01 --end 2021-11-30 --delay 1 --interval 1d
         """
 
         super(Run, self).download_data(max_collector_count, delay, start, end, check_data_length, limit_nums)
 
     def normalize_data(self, date_field_name: str = "date", symbol_field_name: str = "symbol"):
         """normalize data
+
+        读取 rawdata/source/*.csv，转换为规范格式后写入 parquet 到
+        rawdata/normalized/binance/spot/<interval>/<symbol>/<YYYY-MM>.parquet
 
         Parameters
         ----------
@@ -300,10 +408,91 @@ class Run(BaseRun):
 
         Examples
         ---------
-            $ python collector.py normalize_data --source_dir ~/.qlib/crypto_data/source/1d --normalize_dir ~/.qlib/crypto_data/source/1d_nor --interval 1d --date_field_name date
+            $ python collector.py normalize_data --interval 1d
+            $ python collector.py normalize_data --interval 1min
         """
-        super(Run, self).normalize_data(date_field_name, symbol_field_name)
+        # 转换 interval 格式 (1min -> 1m)
+        interval_map = {"1min": "1m", "1d": "1d"}
+        interval_binance = interval_map.get(self.interval, self.interval)
+
+        source_dir = Path(self.source_dir)
+        csv_files = sorted(source_dir.glob("*.csv"))
+        if not csv_files:
+            logger.warning(f"No CSV files found in {source_dir}")
+            return
+
+        output_base = Path(self.default_base_dir) / "normalized" / "binance" / "spot" / interval_binance
+
+        for csv_path in csv_files:
+            logger.info(f"Normalizing {csv_path.name} ...")
+            df = pd.read_csv(csv_path)
+            if df.empty:
+                logger.warning(f"{csv_path.name} is empty, skipping.")
+                continue
+
+            # 变换列
+            df = df.rename(columns={date_field_name: "timestamp"})
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+            # 清理 symbol: BTC.USDT -> BTCUSDT
+            raw_symbol = df[symbol_field_name].iloc[0] if symbol_field_name in df.columns else csv_path.stem
+            symbol_clean = raw_symbol.replace(".", "")
+
+            # 添加固定列
+            df["exchange"] = "binance"
+            df["market_type"] = "spot"
+            df["interval"] = interval_binance
+            df["symbol"] = symbol_clean
+
+            # 选择并排序列
+            target_columns = [
+                "timestamp", "exchange", "symbol", "market_type", "interval",
+                "open", "high", "low", "close", "volume",
+            ]
+            df = df[target_columns].sort_values("timestamp").drop_duplicates(subset=["timestamp"])
+
+            # 按月分区写入 parquet
+            symbol_dir = output_base / symbol_clean
+            symbol_dir.mkdir(parents=True, exist_ok=True)
+
+            df["_month"] = df["timestamp"].dt.strftime("%Y-%m")
+            for month, group in df.groupby("_month"):
+                group = group.drop(columns=["_month"])
+                file_path = symbol_dir / f"{month}.parquet"
+                if file_path.exists():
+                    existing = pd.read_parquet(file_path)
+                    group = pd.concat([existing, group], ignore_index=True)
+                    group = group.drop_duplicates(subset=["timestamp"]).sort_values("timestamp")
+                group.to_parquet(file_path, index=False)
+                logger.info(f"  Wrote {file_path} ({len(group)} rows)")
+
+        logger.info("Normalize data completed.")
 
 
 if __name__ == "__main__":
-    fire.Fire(Run)
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+
+        print("=" * 60)
+        print("Test: get_data_from_binance - BTC/USDT 1m (2026-05-18 06:00 ~ now)")
+        print("=" * 60)
+        df = CryptoCollector.get_data_from_binance(
+            symbol="BTC/USDT",
+            interval="1m",
+            start="2026-05-18 06:00",
+            end=now.strftime("%Y-%m-%d %H:%M"),
+        )
+        if df is not None and not df.empty:
+            print(f"rows: {len(df)}, cols: {list(df.columns)}")
+            print(df.head(5))
+            print("...")
+            print(df.tail(5))
+        else:
+            print("No data returned")
+
+    else:
+        fire.Fire(Run)

@@ -22,8 +22,8 @@ class BaseCollector(abc.ABC):
     NORMAL_FLAG = "NORMAL"
 
     DEFAULT_START_DATETIME_1D = pd.Timestamp("2000-01-01")
-    DEFAULT_START_DATETIME_1MIN = pd.Timestamp(datetime.datetime.now() - pd.Timedelta(days=5 * 6 - 1)).date()
-    DEFAULT_END_DATETIME_1D = pd.Timestamp(datetime.datetime.now() + pd.Timedelta(days=1)).date()
+    DEFAULT_START_DATETIME_1MIN = pd.Timestamp(datetime.datetime.now() - pd.Timedelta(days=5 * 6 - 1))
+    DEFAULT_END_DATETIME_1D = pd.Timestamp(datetime.datetime.now() + pd.Timedelta(days=1))
     DEFAULT_END_DATETIME_1MIN = DEFAULT_END_DATETIME_1D
 
     INTERVAL_1min = "1min"
@@ -34,7 +34,7 @@ class BaseCollector(abc.ABC):
         save_dir: [str, Path],
         start=None,
         end=None,
-        interval="1d",
+        interval="1m",
         max_workers=1,
         max_collector_count=2,
         delay=0,
